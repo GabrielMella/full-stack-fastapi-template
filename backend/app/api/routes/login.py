@@ -1,7 +1,7 @@
 from datetime import timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
@@ -19,13 +19,19 @@ from app.utils import (
 
 router = APIRouter(tags=["login"])
 
+_COOKIE_NAME = "access_token"
+_SESSION_COOKIE_NAME = "session"
 
-@router.post("/login/access-token")
+
+@router.post("/login/access-token", response_model=Message)
 def login_access_token(
-    session: SessionDep, form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
-) -> Token:
+    response: Response,
+    session: SessionDep,
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+) -> Message:
     """
-    OAuth2 compatible token login, get an access token for future requests
+    OAuth2 compatible token login.  The JWT is delivered as an HttpOnly
+    cookie so it is never accessible to JavaScript running in the browser.
     """
     user = crud.authenticate(
         session=session, email=form_data.username, password=form_data.password
@@ -35,11 +41,43 @@ def login_access_token(
     elif not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    return Token(
-        access_token=security.create_access_token(
-            user.id, expires_delta=access_token_expires
-        )
+    access_token = security.create_access_token(
+        user.id, expires_delta=access_token_expires
     )
+    max_age = int(access_token_expires.total_seconds())
+    # HttpOnly cookie carries the JWT — invisible to JavaScript
+    response.set_cookie(
+        key=_COOKIE_NAME,
+        value=access_token,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=max_age,
+        path="/",
+    )
+    # Non-HttpOnly presence cookie lets the SPA detect login state
+    response.set_cookie(
+        key=_SESSION_COOKIE_NAME,
+        value="1",
+        httponly=False,
+        secure=True,
+        samesite="strict",
+        max_age=max_age,
+        path="/",
+    )
+    return Message(message="Login successful")
+
+
+@router.post("/logout", response_model=Message)
+def logout(response: Response) -> Message:
+    """
+    Clear the authentication cookies, ending the user session.
+    """
+    response.delete_cookie(key=_COOKIE_NAME, path="/", samesite="strict", secure=True)
+    response.delete_cookie(
+        key=_SESSION_COOKIE_NAME, path="/", samesite="strict", secure=True
+    )
+    return Message(message="Logged out successfully")
 
 
 @router.post("/login/test-token", response_model=UserPublic)

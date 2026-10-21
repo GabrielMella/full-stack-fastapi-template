@@ -11,8 +11,10 @@ import {
 import { handleError } from "@/utils"
 import useCustomToast from "./useCustomToast"
 
+// Checks a non-HttpOnly presence cookie set by the server on login.
+// The actual JWT lives in an HttpOnly cookie and is never readable from JS.
 const isLoggedIn = () => {
-  return localStorage.getItem("access_token") !== null
+  return document.cookie.split(";").some((c) => c.trim().startsWith("session="))
 }
 
 const useAuth = () => {
@@ -39,10 +41,8 @@ const useAuth = () => {
   })
 
   const login = async (data: AccessToken) => {
-    const response = await LoginService.loginAccessToken({
-      body: data,
-    })
-    localStorage.setItem("access_token", response.data.access_token)
+    // The server sets an HttpOnly cookie; nothing is stored in the browser.
+    await LoginService.loginAccessToken({ body: data })
   }
 
   const loginMutation = useMutation({
@@ -53,8 +53,16 @@ const useAuth = () => {
     onError: handleError.bind(showErrorToast),
   })
 
-  const logout = () => {
-    localStorage.removeItem("access_token")
+  const logout = async () => {
+    // Ask the server to clear the HttpOnly cookie.  Use a plain fetch so
+    // this works before the generated client is regenerated to include the
+    // new /logout route.
+    const apiBase = import.meta.env.VITE_API_URL ?? ""
+    await fetch(`${apiBase}/api/v1/logout`, {
+      method: "POST",
+      credentials: "include",
+    }).catch(() => {})
+    queryClient.clear()
     navigate({ to: "/login" })
   }
 
